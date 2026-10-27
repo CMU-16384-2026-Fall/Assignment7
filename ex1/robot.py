@@ -172,26 +172,19 @@ class Robot:
         n = self.dof
 
         # --------------- BEGIN STUDENT SECTION: part (b), forward kinematics in 3D ---------------
-        # Fill in frames[:, :, 0] through frames[:, :, n], from the base out.
-
-        # TODO (b.1): Frame 0 is the base frame itself.
-        # frames[:, :, 0] = ...
-
-        # Then, for each joint i = 1, ..., n:
-
-        # TODO (b.2): Read joint i's row, row i - 1 of self.joints: its offset
-        #   xyz = row[:3] and its orientation rpy = row[3:].
-        # xyz, rpy = ...
-
-        # TODO (b.3): Its link, relative to the frame before it: the fixed
-        #   offset first, then the joint's rotation by its angle about z,
-        #       transform(xyz, rpy) @ rot_z(q_i), with q_i = thetas[i - 1].
-        # link = ...
-
-        # TODO (b.4): Chain it on: H_i^0 = H_{i-1}^0 (link).
-        # frames[:, :, i] = ...
+        # Calculate frames[:, :, 0] through frames[:, :, n], from the base out.
 
         # Your code starts here
+        # TODO
+        # frames[:, :, 0] = ...
+
+
+        # remember for each link offset first from self.joints,
+        # then rotation by thetas
+
+        # frames[:, :, i] = ...
+
+        
 
         # Your code ends here
         # --------------- END STUDENT SECTION ------------------------------------------------
