@@ -1,0 +1,14 @@
+# Answer key
+solutions/
+*__pycache__
+*.zip
+!16-384 Assignment 7.zip
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
