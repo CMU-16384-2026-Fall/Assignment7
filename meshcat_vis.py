@@ -1,15 +1,14 @@
 """Run the students' HW7 forward kinematics on the simulated xArm7, in meshcat.
 
 Sliders pose the arm; the simulator moves it. Your `forward_kinematics`, on
-the xArm7's DH table, is handed the joint angles the arm is actually at, and
-draws every one of its frames over the arm, with a line through their origins. Two checks run
-against the simulator's own model of the arm, which is where the DH frames
-come from:
+the xArm7's joint table, is handed the joint angles the arm is actually at, and
+draws every one of its frames over the arm, with a line through their origins.
+Two checks run against the simulator's own model of the arm, which has the
+same frames:
 
     the end effector   your last frame against the flange (the `link7` body)
-    every frame        frame i's z axis should run along joint i+1's axis, its
-                       positive way, with its origin on that axis (that is what
-                       DH frames are)
+    every frame        frame i against the `link{i}` body, position and
+                       orientation; the first one that is off is named
 
 Nothing in here grades anything. `local_autograder.py` decides right and wrong
 from the fixtures; this only shows you what your code does.
@@ -382,51 +381,41 @@ def _slider_range(arm, index):
     return low, high
 
 
-def _angle_between(u, v):
-    u = np.asarray(u, dtype=float)
-    v = np.asarray(v, dtype=float)
-    cos = float(np.dot(u, v) / (np.linalg.norm(u) * np.linalg.norm(v)))
-    return math.acos(max(-1.0, min(1.0, cos)))
-
-
 def _rotation_angle(R):
     """The angle of the rotation R, in rad."""
     return math.acos(max(-1.0, min(1.0, (np.trace(R) - 1.0) / 2.0)))
 
 
 def _truth(arm):
-    """(flange pose, [(axis, anchor) of joints 1..7]) from the simulator, in its
-    world frame. Read under the arm's lock: the simulation thread writes it."""
+    """(q, [poses of the base and the link1..link7 bodies]) from the simulator,
+    in its world frame. Read under the arm's lock: the simulation thread writes
+    it."""
     with arm._lock:
-        body = arm.model.body("link7").id
-        flange = np.eye(4)
-        flange[:3, :3] = arm.data.xmat[body].reshape(3, 3)
-        flange[:3, 3] = arm.data.xpos[body]
-        axes = [(arm.data.xaxis[j].copy(), arm.data.xanchor[j].copy()) for j in arm._jid]
+        links = [arm._base_frame()]
+        for i in range(1, 8):
+            body = arm.model.body(f"link{i}").id
+            T = np.eye(4)
+            T[:3, :3] = arm.data.xmat[body].reshape(3, 3)
+            T[:3, 3] = arm.data.xpos[body]
+            links.append(T)
         q = arm.data.qpos[arm._qadr].copy()
-    return q, flange, axes
+    return q, links
 
 
-def check_frames(world, flange, axes):
+def check_frames(world, links):
     """What the simulator thinks of your frames: (flange error mm, deg, first problem)."""
-    ee = world[-1]
+    ee, flange = world[-1], links[-1]
     position = float(np.linalg.norm(ee[:3, 3] - flange[:3, 3]))
     angle = _rotation_angle(ee[:3, :3].T @ flange[:3, :3])
-    for i, (axis, anchor) in enumerate(axes):
-        z, origin = world[i][:3, 2], world[i][:3, 3]
-        # DH puts z_i along joint i+1's axis, and pointing its positive way:
-        # the way the joint turns for a positive angle.
-        tilt = _angle_between(z, axis)
-        off_axis = float(np.linalg.norm(np.cross(origin - anchor, axis)))
-        if math.pi - tilt < _ANGLE_OK:
-            return position, angle, (f"frame {i}'s z axis points the opposite way to "
-                                     f"joint {i + 1}'s")
-        if tilt > _ANGLE_OK:
-            return position, angle, (f"frame {i}'s z axis is {math.degrees(tilt):.0f} deg "
-                                      f"off joint {i + 1}'s axis")
-        if off_axis > _POSITION_OK:
-            return position, angle, (f"frame {i}'s origin is {off_axis * 1000:.0f} mm "
-                                     f"off joint {i + 1}'s axis")
+    for i, (mine, link) in enumerate(zip(world, links)):
+        off = float(np.linalg.norm(mine[:3, 3] - link[:3, 3]))
+        turn = _rotation_angle(mine[:3, :3].T @ link[:3, :3])
+        what = "the base" if i == 0 else f"link {i}"
+        if off > _POSITION_OK:
+            return position, angle, f"frame {i} is {off * 1000:.0f} mm from {what}"
+        if turn > _ANGLE_OK:
+            return position, angle, (f"frame {i} is turned {math.degrees(turn):.0f} deg "
+                                     f"from {what}")
     return position, angle, None
 
 
@@ -519,11 +508,11 @@ def _plain(html):
     return re.sub(r"<[^>]+>", "", html).replace("&nbsp;", " ")
 
 
-def visualize_ex1(robot_cls, dh_table_fn, rate=30.0, open_browser=True):
+def visualize_ex1(robot_cls, joints_fn, rate=30.0, open_browser=True):
     """Pose the arm with sliders; your forward_kinematics draws its frames over it.
 
-    `dh_table_fn` returns the xArm7's DH table (XARM7_DH, from robot.py): the
-    frames are those of that table through your forward_kinematics.
+    `joints_fn` returns the xArm7's joint table (XARM7_JOINTS, from robot.py):
+    the frames are those of that table through your forward_kinematics.
 
     The arm is driven by the simulator, not by your code, so the demo works
     before any of it does. Your frames are drawn in the simulator's world
@@ -554,10 +543,11 @@ def visualize_ex1(robot_cls, dh_table_fn, rate=30.0, open_browser=True):
         def tick():
             values = page.values
             arm.servo_joints(np.array([values[f"q{i}"] for i in range(7)]))
-            q, flange, axes = _truth(arm)
+            q, links = _truth(arm)
+            flange = links[-1]
 
             try:
-                table = _checked(dh_table_fn(), "XARM7_DH", (7, 4))
+                table = _checked(joints_fn(), "XARM7_JOINTS", (7, 6))
                 robot = robot_cls(table)
                 frames = _checked(robot.forward_kinematics(q.copy()), "frames", (4, 4, 8))
                 world = [base @ frames[:, :, i] for i in range(8)]
@@ -577,8 +567,8 @@ def visualize_ex1(robot_cls, dh_table_fn, rate=30.0, open_browser=True):
                 plot.update(None, (base_inv @ flange)[:3, 3], status)
                 return
 
-            position, angle, problem = check_frames(world, flange, axes)
-            verdict = ("<b style='color:#7bd88f'>every frame on its joint axis</b>"
+            position, angle, problem = check_frames(world, links)
+            verdict = ("<b style='color:#7bd88f'>every frame on its link</b>"
                        if problem is None else f"<b style='color:#ff5a5f'>{problem}</b>")
             status = (f"your end effector vs the flange: <b>{position * 1000:.1f}</b> mm, "
                       f"<b>{math.degrees(angle):.1f}</b> deg &nbsp; {verdict}")

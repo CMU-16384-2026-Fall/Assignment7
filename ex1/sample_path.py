@@ -13,7 +13,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 
-from robot import XARM7_DH, Robot
+from robot import XARM7_JOINTS, Robot
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -24,7 +24,7 @@ def sample_path():
 
     # Calculate the end effector path through the entire run.
     try:
-        robot = Robot(XARM7_DH)
+        robot = Robot(XARM7_JOINTS)
         path = np.array([robot.end_effector(q) for q in theta], dtype=float).reshape(-1, 3)
     except Exception as err:
         raise SystemExit(f"Your code isn't ready for this yet: {type(err).__name__}: {err}\n"

@@ -1,4 +1,4 @@
-"""Autograder for HW7: Denavit-Hartenberg forward kinematics of the xArm7 (ex1).
+"""Autograder for HW7: 3D transforms and forward kinematics of the xArm7 (ex1).
 
     python local_autograder.py             # grade everything
     python local_autograder.py -p ex1      # one exercise
@@ -13,7 +13,6 @@ library, installed from the copy in this handout:
 import argparse
 import contextlib
 import importlib.util
-import inspect
 import json
 import signal
 import sys
@@ -39,6 +38,10 @@ MAX_DETAIL_CHARS = 600
 
 class StudentTimeout(Exception):
     """Student code ran past its time limit."""
+
+
+class WrongResult(ValueError):
+    """Student code returned something that isn't the array it should be."""
 
 
 @contextlib.contextmanager
@@ -106,10 +109,13 @@ def _close(actual, expected, tol=TOL):
 def _array(value, name, shape):
     """`value` as a float array of `shape`, or a ValueError saying what it was."""
     if value is None:
-        raise ValueError(f"{name} is None: did the function reach its return statement?")
-    array = np.asarray(value, dtype=float)
+        raise WrongResult(f"{name} is None: did the function reach its return statement?")
+    try:
+        array = np.asarray(value, dtype=float)
+    except (TypeError, ValueError) as err:
+        raise WrongResult(f"{name} isn't an array of numbers ({err})") from None
     if array.shape != tuple(shape):
-        raise ValueError(f"{name} has shape {array.shape}, expected {tuple(shape)}")
+        raise WrongResult(f"{name} has shape {array.shape}, expected {tuple(shape)}")
     return array
 
 
@@ -130,7 +136,14 @@ def _right_before(i, what):
 def _describe(err):
     if isinstance(err, SystemExit):
         return f"your code called sys.exit() or exit() (code {err.code!r}); it must return instead"
+    if isinstance(err, WrongResult):
+        return str(err)
     return f"{type(err).__name__}: {err}"
+
+
+def _raised(call, err):
+    """'f(x) raised ...', or 'f(x) failed: ...' when it returned something unusable."""
+    return f"{call} {'failed:' if isinstance(err, WrongResult) else 'raised'} {_describe(err)}"
 
 
 def _fmt(values):
@@ -213,36 +226,19 @@ class Grader:
 
 
 # ----------------------------------------------------------------------
-# The tests. Each takes the student's Robot class and an iterable of
+# The tests. Each takes the student's robot.py module and an iterable of
 # (case, expected) pairs, so Gradescope's grade.py runs exactly these on its
 # perturbed cases.
 # ----------------------------------------------------------------------
 
 
 # ----------------------------------------------------------------------
-# Part (a): the DH transform
+# Part (a): 3D homogeneous transforms
 # ----------------------------------------------------------------------
 
-# The four elementary transforms H_i^{i-1} is the product of, exactly as the
-# writeup's Background section prints them. A failing dh_transform is tried on
-# one parameter at a time, against these, to find which factor is wrong.
-
-
-def _rot_z(t):
-    c, s = np.cos(t), np.sin(t)
-    return np.array([[c, -s, 0, 0], [s, c, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=float)
-
-
-def _trans_z(d):
-    H = np.eye(4)
-    H[2, 3] = d
-    return H
-
-
-def _trans_x(a):
-    H = np.eye(4)
-    H[0, 3] = a
-    return H
+# The elementary transforms, exactly as the writeup's Background section
+# prints them. A failing transform() is tried on one parameter at a time,
+# against these, to find which factor is wrong.
 
 
 def _rot_x(t):
@@ -250,67 +246,140 @@ def _rot_x(t):
     return np.array([[1, 0, 0, 0], [0, c, -s, 0], [0, s, c, 0], [0, 0, 0, 1]], dtype=float)
 
 
-def _dh_function(robot_cls):
-    """Robot.dh_transform as a plain function of (a, alpha, d, theta).
-
-    The stub declares it a @staticmethod; if a student deleted the decorator
-    and gave it a `self`, it is called through an instance instead, so the
-    grade is about the transform, not the decorator.
-    """
-    raw = inspect.getattr_static(robot_cls, "dh_transform", None)
-    if raw is None:
-        raise AttributeError("Robot has no dh_transform method")
-    if isinstance(raw, (staticmethod, classmethod)):
-        return robot_cls.dh_transform
-    return robot_cls(np.zeros((1, 4))).dh_transform
+def _rot_y(t):
+    c, s = np.cos(t), np.sin(t)
+    return np.array([[c, 0, s, 0], [0, 1, 0, 0], [-s, 0, c, 0], [0, 0, 0, 1]], dtype=float)
 
 
-def _call_dh(dh_fn, a, alpha, d, theta):
-    return _array(dh_fn(a, alpha, d, theta), "dh_transform's result", (4, 4))
+def _rot_z(t):
+    c, s = np.cos(t), np.sin(t)
+    return np.array([[c, -s, 0, 0], [s, c, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=float)
 
 
-def _diagnose_dh(dh_fn, a, alpha, d, theta):
-    """Which factor of Rot_z(theta) Trans_z(d) Trans_x(a) Rot_x(alpha) is wrong."""
-    pieces = [
-        ("Rot_z(theta), the first factor", (0.0, 0.0, 0.0, theta), _rot_z(theta),
-         "a rotation by theta about z"),
-        ("Trans_z(d), the second factor", (0.0, 0.0, d, 0.0), _trans_z(d),
-         "a translation by d along z"),
-        ("Trans_x(a), the third factor", (a, 0.0, 0.0, 0.0), _trans_x(a),
-         "a translation by a along x"),
-        ("Rot_x(alpha), the fourth factor", (0.0, alpha, 0.0, 0.0), _rot_x(alpha),
-         "a rotation by alpha about x"),
-    ]
-    for name, args, want, meaning in pieces:
-        try:
-            got = _call_dh(dh_fn, *args)
-        except Exception as err:
-            return f"{name}: {_call('dh_transform', args)} raised {_describe(err)}"
-        problem = _transform_problem(got, want, TOL)
+def _translation(x, y, z):
+    H = np.eye(4)
+    H[:3, 3] = [x, y, z]
+    return H
+
+
+_PARTS = {"rot_x": "(a.1)", "rot_y": "(a.2)", "rot_z": "(a.3)", "translation": "(a.4)",
+          "transform": "(a.5)"}
+_ELEMENTARY = {"rot_x": _rot_x, "rot_y": _rot_y, "rot_z": _rot_z, "translation": _translation}
+_AXES = {"rot_x": "x", "rot_y": "y", "rot_z": "z"}
+
+
+def _fmt_args(args):
+    """'0.3' or '0.1, 0.2, 0.3' or '[0.1, 0.2, 0.3], [0, 0, 0.7]'."""
+    return ", ".join(_fmt(a) if np.ndim(a) else f"{a:.4g}" for a in args)
+
+
+def _call_fn(module, name, args):
+    fn = getattr(module, name, None)
+    if not callable(fn):
+        raise AttributeError(f"robot.py has no function {name}()")
+    return _array(fn(*args), f"{name}'s result", (4, 4))
+
+
+def _elementary_slip(name, args, got, tol):
+    """A guess at what went wrong in one of the four elementary functions."""
+    if name == "translation":
+        if _close(got.T, _translation(*args), tol):
+            return "the offset is in the bottom row; it goes in the last column, H[:3, 3]"
+        if _close(got[:3, :3], np.zeros((3, 3)), tol):
+            return "the rotation block is zero; with no rotation it is the identity"
+        return None
+    (theta,) = args
+    if _close(got, _ELEMENTARY[name](-theta), tol):
+        return ("it rotates by -theta: the two sin terms have each other's signs"
+                + (" (about y the + sin is in the top row, [0, 2], and the - sin in the"
+                   " third, [2, 0])" if name == "rot_y" else ""))
+    for other, axis in _AXES.items():
+        if other != name and _close(got, _ELEMENTARY[other](theta), tol):
+            return f"it is a rotation about {axis}, not {_AXES[name]}"
+    return None
+
+
+def _check_elementary(module, name, args, tol):
+    """None if the student's elementary function is right on `args`, else why not."""
+    try:
+        got = _call_fn(module, name, args)
+    except WrongResult as err:
+        return f"{name}({_fmt_args(args)}), part {_PARTS[name]}, is wrong: {err}"
+    except Exception as err:
+        return _raised(f"{name}({_fmt_args(args)})", err)
+    problem = _transform_problem(got, _ELEMENTARY[name](*args), tol)
+    if problem is None:
+        return None
+    slip = _elementary_slip(name, args, got, tol)
+    return (f"{name}({_fmt_args(args)}), part {_PARTS[name]}, is wrong: {problem}"
+            + (f". Likely cause: {slip}" if slip else ""))
+
+
+def _diagnose_transform(module, xyz, rpy, got, tol):
+    """Which piece of Trans(x, y, z) Rot_z(yaw) Rot_y(pitch) Rot_x(roll) is wrong."""
+    roll, pitch, yaw = rpy
+    # Their own building blocks first, on this case's numbers.
+    for name, args in [("translation", tuple(xyz)), ("rot_z", (yaw,)), ("rot_y", (pitch,)),
+                       ("rot_x", (roll,))]:
+        problem = _check_elementary(module, name, args, tol)
         if problem is not None:
-            return (f"{name}, is wrong. With every other parameter 0, "
-                    f"{_call('dh_transform', args)} should be just {meaning}, but {problem}")
-    return ("none on its own: each factor is right with the other parameters 0, so they "
-            "are multiplied in the wrong order. H = Rot_z(theta) Trans_z(d) Trans_x(a) "
-            "Rot_x(alpha), in that order")
+            return f"{problem}, and transform() is built from it, so fix that first"
+    zero = (0.0, 0.0, 0.0)
+    pieces = [
+        ("the translation", (tuple(xyz), zero), _translation(*xyz),
+         "a translation by xyz", "translation(x, y, z)"),
+        ("the yaw", (zero, (0.0, 0.0, yaw)), _rot_z(yaw), "a rotation by yaw about z",
+         "rot_z(yaw)"),
+        ("the pitch", (zero, (0.0, pitch, 0.0)), _rot_y(pitch), "a rotation by pitch about y",
+         "rot_y(pitch)"),
+        ("the roll", (zero, (roll, 0.0, 0.0)), _rot_x(roll), "a rotation by roll about x",
+         "rot_x(roll)"),
+    ]
+    for what, args, want, meaning, call in pieces:
+        try:
+            alone = _call_fn(module, "transform", args)
+        except Exception as err:
+            return _raised(f"transform({_fmt_args(args)})", err)
+        problem = _transform_problem(alone, want, tol)
+        if problem is not None:
+            angle = max(args[1], key=abs)
+            mixed = [f"; it is a rotation about {axis}: {what[4:]} is going into {other}(), "
+                     f"not {call[:5]}()" for other, axis in _AXES.items()
+                     if angle and _close(alone, _ELEMENTARY[other](angle), tol)]
+            return (f"{what}. With every other parameter 0, transform({_fmt_args(args)}) "
+                    f"should be just {meaning}, {call}, but {problem}" + "".join(mixed[:1]))
+    # Each piece is right on its own, so the order is wrong. Which order?
+    T, Rz, Ry, Rx = _translation(*xyz), _rot_z(yaw), _rot_y(pitch), _rot_x(roll)
+    orders = [
+        (T @ Rx @ Ry @ Rz, "the three rotations are in reverse order (roll first)"),
+        (Rz @ Ry @ Rx @ T, "the translation is on the right, after the rotations"),
+        (Rx @ Ry @ Rz @ T, "the whole product is reversed"),
+    ]
+    matches = [why for H, why in orders if _close(got, H, tol)]
+    why = "; or else ".join(matches) if matches else "they are multiplied in the wrong order"
+    return (f"none on its own: each piece is right with the other parameters 0, but {why}. "
+            "H = Trans(x, y, z) Rot_z(yaw) Rot_y(pitch) Rot_x(roll), left to right")
 
 
-def grade_dh_transform(robot_cls, cases, keep=MAX_FAILURES_SHOWN):
+def grade_transforms(module, cases, keep=MAX_FAILURES_SHOWN):
     def check(case, expected):
-        args = (case["a"], case["alpha"], case["d"], case["theta"])
-        dh_fn = _dh_function(robot_cls)
-        H = _call_dh(dh_fn, *args)
-        problem = _transform_problem(H, np.asarray(expected["H"]), TOL)
+        name, args = case["fn"], case["args"]
+        want = np.asarray(expected["H"])
+        if name in _ELEMENTARY:
+            problem = _check_elementary(module, name, tuple(args), TOL)
+            return problem is None, f"{problem}."  # starts with the function's name: no capital
+        H = _call_fn(module, "transform", args)
+        problem = _transform_problem(H, want, TOL)
         if problem is None:
             return True, ""
         return False, (f"{_sentence(problem)}. First wrong piece: "
-                       f"{_diagnose_dh(dh_fn, *args)}.")
+                       f"{_diagnose_transform(module, args[0], args[1], H, TOL)}.")
 
     def label(i, case):
-        return (f"case {i} (a={case['a']:.4g}, alpha={case['alpha']:.4g}, "
-                f"d={case['d']:.4g}, theta={case['theta']:.4g})")
+        return f"case {i}: {case['fn']}({_fmt_args(case['args'])}), part {_PARTS[case['fn']]}"
 
-    return Grader("ex1: Robot.dh_transform", keep).run(cases, label, check)
+    return Grader("ex1 (a): rot_x, rot_y, rot_z, translation, transform", keep).run(
+        cases, label, check)
 
 
 # ----------------------------------------------------------------------
@@ -318,54 +387,67 @@ def grade_dh_transform(robot_cls, cases, keep=MAX_FAILURES_SHOWN):
 # ----------------------------------------------------------------------
 
 
-def _diagnose_step(robot, dh, thetas, frames, want, i, tol):
+def _diagnose_step(module, joints, thetas, frames, want, i, tol):
     """Why frame i is wrong when frames 0..i-1 are right: the student's frame
     compared with what each common slip in step i would have produced, all
-    built from the student's own dh_transform and the expected frame i - 1."""
-    a, alpha, d, offset = dh[i - 1]
+    built from the student's own transform() and rot_z() and the expected
+    frame i - 1."""
+    row = joints[i - 1]
+    xyz, rpy = row[:3], row[3:]
     q = thetas[i - 1]
     prev = want[:, :, i - 1]
-    step = np.linalg.solve(prev, want[:, :, i])  # the H_i^{i-1} that was needed
+    step = np.linalg.solve(prev, want[:, :, i])  # the link transform that was needed
     got = frames[:, :, i]
 
-    def dh_(*args):
-        return _call_dh(robot.dh_transform, *args)
+    def tf(*args):
+        return _call_fn(module, "transform", args)
+
+    def rot(axis, angle):
+        return _call_fn(module, f"rot_{axis}", (angle,))
 
     try:
-        A = dh_(a, alpha, d, q + offset)
+        offset = tf(xyz, rpy)
+        link = offset @ rot("z", q)
     except Exception as err:
-        return f"dh_transform raised {_describe(err)} for this joint"
-    if not _close(A, step, tol):
-        return (f"{_call('dh_transform', [a, alpha, d, q + offset])}, joint {i}'s link, is "
+        return _raised("your part (a) functions, for this joint,", err)
+    if not _close(link, step, tol):
+        return (f"transform({_fmt_args([xyz, rpy])}) @ rot_z({q:.4g}), joint {i}'s link, is "
                 "itself wrong, so fix part (a) first")
     candidates = [
-        (A @ prev, f"the product is in the wrong order: frames[:, :, {i}] = "
-                   f"frames[:, :, {i - 1}] @ dh_transform(joint {i}), with the new link on the "
-                   "right"),
-        (A, f"frames[:, :, {i}] is joint {i}'s dh_transform on its own, not chained on: "
-            f"multiply it onto frames[:, :, {i - 1}]"),
+        (link @ prev, f"the product is in the wrong order: frames[:, :, {i}] = "
+                      f"frames[:, :, {i - 1}] @ link, with the new link on the right"),
+        (prev @ rot("z", q) @ offset,
+         f"the joint's rotation comes before its offset: link = transform(xyz, rpy) @ "
+         f"rot_z(q_{i}), the offset first"),
+        (link, f"frames[:, :, {i}] is joint {i}'s link on its own, not chained on: multiply "
+               f"it onto frames[:, :, {i - 1}]"),
         (prev, f"frames[:, :, {i}] is a copy of frame {i - 1}: this joint's link was never "
                "multiplied on"),
+        (prev @ offset, f"joint {i}'s angle wasn't used: the link ends with rot_z(q_{i}), "
+                        f"with q_{i} = thetas[{i - 1}]"),
+        (prev @ rot("z", q), f"joint {i}'s offset transform(xyz, rpy), from row joints[{i - 1}], "
+                             "wasn't applied"),
+        (prev @ tf(xyz, (0.0, 0.0, 0.0)) @ rot("z", q),
+         f"joint {i}'s orientation rpy = row[3:] was left out"),
+        (prev @ offset @ rot("x", q), f"joint {i} turns about x here; every joint turns about "
+                                      "its frame's z axis, rot_z"),
+        (prev @ offset @ rot("y", q), f"joint {i} turns about y here; every joint turns about "
+                                      "its frame's z axis, rot_z"),
+        (prev @ tf(rpy, xyz) @ rot("z", q),
+         "xyz and rpy are swapped: a row is [x, y, z, roll, pitch, yaw], so xyz = row[:3] and "
+         "rpy = row[3:]"),
+        (prev @ tf(xyz, rpy[::-1]) @ rot("z", q),
+         "the angles were read as (yaw, pitch, roll); a row's are (roll, pitch, yaw)"),
     ]
-    if abs(offset) > 1e-9:
-        candidates.append((prev @ dh_(a, alpha, d, q),
-                           f"joint {i}'s theta offset ({offset:.4g} rad) wasn't added to its "
-                           "angle: theta_i = q_i + theta_offset_i"))
-    candidates.append((prev @ dh_(a, alpha, d, offset),
-                       f"joint {i}'s angle q_{i} wasn't used (theta was just the offset): "
-                       f"theta_i = q_i + theta_offset_i, with q_i = thetas[{i - 1}]"))
-    candidates.append((prev @ dh_(d, alpha, a, q + offset),
-                       "a and d are swapped: dh_transform takes (a, alpha, d, theta), and a "
-                       "row is [a, alpha, d, theta_offset]"))
-    for j in range(len(dh)):
+    for j in range(len(joints)):
         if j != i - 1:
-            r = dh[j]
-            candidates.append((prev @ dh_(r[0], r[1], r[2], q + r[3]),
-                               f"this used row {j + 1} of the table (dh[{j}]) for joint {i}; "
-                               f"joint {i}'s is dh[{i - 1}]"))
+            r = joints[j]
+            candidates.append((prev @ tf(r[:3], r[3:]) @ rot("z", q),
+                               f"this used row {j + 1} of the table (joints[{j}]) for joint {i}; "
+                               f"joint {i}'s is joints[{i - 1}]"))
     for j in range(len(thetas)):
         if j != i - 1:
-            candidates.append((prev @ dh_(a, alpha, d, thetas[j] + offset),
+            candidates.append((prev @ offset @ rot("z", thetas[j]),
                                f"this used thetas[{j}] (joint {j + 1}'s angle) for joint {i}; "
                                f"joint {i}'s is thetas[{i - 1}]"))
     # More than one slip can produce the same frame on a given case (say, an
@@ -376,16 +458,16 @@ def _diagnose_step(robot, dh, thetas, frames, want, i, tol):
     return matches[0] + "".join(f"; or else {why}" for why in matches[1:])
 
 
-def grade_fk(robot_cls, cases, keep=MAX_FAILURES_SHOWN):
+def grade_fk(module, cases, keep=MAX_FAILURES_SHOWN):
     def check(case, expected):
-        dh = np.array(case["dh"], dtype=float)
+        joints = np.array(case["joints"], dtype=float)
         thetas = np.array(case["thetas"], dtype=float)
-        n = dh.shape[0]
-        robot = robot_cls(dh.copy())
+        n = joints.shape[0]
+        robot = module.Robot(joints.copy())
         frames = _array(robot.forward_kinematics(thetas.copy()), "frames", (4, 4, n + 1))
         want = np.asarray(expected["frames"])
         # Positions scale with the arm, so the tolerance does too.
-        tol = TOL * max(1.0, float(np.sum(np.abs(dh[:, [0, 2]]))))
+        tol = TOL * max(1.0, float(np.sum(np.abs(joints[:, :3]))))
         for i in range(n + 1):
             problem = _transform_problem(frames[:, :, i], want[:, :, i], tol)
             if problem is None:
@@ -396,19 +478,19 @@ def grade_fk(robot_cls, cases, keep=MAX_FAILURES_SHOWN):
             where = (f"{_sentence(_right_before(i, ('is right', 'are right')))} and "
                      f"frames[:, :, {i}] is the first wrong one, so the mistake is in step {i} "
                      f"of the chain: frames[:, :, {i}] = frames[:, :, {i - 1}] @ "
-                     f"dh_transform(joint {i}), built from joint {i}'s row dh[{i - 1}] and its "
-                     f"angle thetas[{i - 1}] + its offset. {_sentence(problem)}")
+                     f"transform(xyz, rpy) @ rot_z(q_{i}), with joint {i}'s row "
+                     f"joints[{i - 1}] and its angle thetas[{i - 1}]. {_sentence(problem)}")
             try:
-                why = _diagnose_step(robot, dh, thetas, frames, want, i, tol)
+                why = _diagnose_step(module, joints, thetas, frames, want, i, tol)
             except Exception:
                 why = None
             return False, where + (f". Likely cause: {why}." if why else ".")
         return True, ""
 
     def label(i, case):
-        return f"case {i} ({case.get('name') or str(len(case['dh'])) + '-joint chain'})"
+        return f"case {i} ({case.get('name') or str(len(case['joints'])) + '-joint chain'})"
 
-    return Grader("ex1: Robot.forward_kinematics", keep).run(cases, label, check)
+    return Grader("ex1 (b): Robot.forward_kinematics", keep).run(cases, label, check)
 
 
 # ----------------------------------------------------------------------
@@ -443,8 +525,8 @@ def _import_once(relpath):
 
 
 def _load(name, relpath, *attrs):
-    """(values, None) for the named attributes of a student file, or
-    (None, a Grader that failed saying why)."""
+    """(the student's module, None), or (None, a Grader that failed saying
+    why) if it doesn't import or lacks one of `attrs`."""
     module, error = _import_once(relpath)
     if module is None:
         failed = Grader(name)
@@ -455,7 +537,7 @@ def _load(name, relpath, *attrs):
         failed = Grader(name)
         failed.record(f"{', '.join(missing)} defined", False, f"not found in {relpath}")
         return None, failed
-    return tuple(getattr(module, a) for a in attrs), None
+    return module, None
 
 
 def _run(name, relpath, attrs, exercise, k, grade, keep):
@@ -465,18 +547,21 @@ def _run(name, relpath, attrs, exercise, k, grade, keep):
         failed = Grader(name, keep)
         failed.record("fixtures present", False, "missing " + ", ".join(missing))
         return failed
-    loaded, failed = _load(name, relpath, *attrs)
+    module, failed = _load(name, relpath, *attrs)
     if failed is not None:
         return failed
-    return grade(*loaded, _fixture(exercise, k), keep)
+    return grade(module, _fixture(exercise, k), keep)
+
+
+TRANSFORMS = ["rot_x", "rot_y", "rot_z", "translation", "transform"]
 
 
 def graders_ex1(keep):
     return [
-        _run("ex1: Robot.dh_transform", "ex1/robot.py", ["Robot"], "ex1", 1,
-             grade_dh_transform, keep),
-        _run("ex1: Robot.forward_kinematics", "ex1/robot.py", ["Robot"], "ex1", 2,
-             grade_fk, keep),
+        _run("ex1 (a): rot_x, rot_y, rot_z, translation, transform", "ex1/robot.py",
+             TRANSFORMS, "ex1", 1, grade_transforms, keep),
+        _run("ex1 (b): Robot.forward_kinematics", "ex1/robot.py", ["Robot"] + TRANSFORMS,
+             "ex1", 2, grade_fk, keep),
     ]
 
 
@@ -507,7 +592,7 @@ def _meshcat_vis():
 def visualize_ex1():
     """Pose the simulated xArm7 with sliders; your FK draws its frames over it."""
     module = _load_module(ROOT / "ex1" / "robot.py")
-    _meshcat_vis().visualize_ex1(module.Robot, lambda: module.XARM7_DH)
+    _meshcat_vis().visualize_ex1(module.Robot, lambda: module.XARM7_JOINTS)
 
 
 def main():

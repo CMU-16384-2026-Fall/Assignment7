@@ -1,8 +1,8 @@
 # Assignment 7
 
-Denavit-Hartenberg parameters and the forward kinematics of the xArm7 in 3D.
-The writeup is built from `16-384 Assignment 7/assignment7.tex`; the code is in
-`ex1/`.
+3D homogeneous transforms and the forward kinematics of the xArm7. The writeup
+is `16_384_Assignment_7.pdf` (its LaTeX source is in `16-384 Assignment 7.zip`);
+the code is in `ex1/`.
 
 ## Setup
 
@@ -20,15 +20,17 @@ cd ..
 
 ## What to write
 
-`ex1/robot.py` holds a general `Robot` class for a serial chain of revolute
-joints described by its DH table, and the xArm7's table, `XARM7_DH`. Fill in,
-in this order:
+`ex1/robot.py` holds the 3D transforms, a general `Robot` class for a serial
+chain of revolute joints, and the xArm7's joint table, `XARM7_JOINTS`: one row
+`[x, y, z, roll, pitch, yaw]` per joint, placing it relative to the frame
+before it. Fill in, in this order:
 
-- (a) `Robot.dh_transform(a, alpha, d, theta)`: one link's 4x4 transform,
-  `H_i^{i-1} = Rot_z(theta) Trans_z(d) Trans_x(a) Rot_x(alpha)`.
+- (a) `rot_x`, `rot_y`, `rot_z`, `translation`: the elementary 4x4 transforms;
+  then `transform(xyz, rpy) = Trans(x, y, z) Rot_z(yaw) Rot_y(pitch) Rot_x(roll)`.
 - (b) `Robot.forward_kinematics(thetas)`: every frame, `frames[:, :, i] = H_i^0`
   for `i = 0, ..., n`, with frame 0 the base and the last frame the end
-  effector.
+  effector. Each joint is its row's fixed offset, then its rotation about z:
+  `H_i^0 = H_{i-1}^0 transform(xyz_i, rpy_i) Rot_z(q_i)`.
 
 ## Checking your work
 
@@ -39,13 +41,13 @@ python local_autograder.py -v         # list every failing case, not just the fi
 ```
 
 This runs your code on the test cases in `ex1/inK.txt` and compares the results
-with `ex1/outK.txt`: `in1.txt` checks `dh_transform` on its own, `in2.txt`
-checks `forward_kinematics` on the xArm7 and on random chains of one to seven
-joints. Each failure says where in the chain the first mistake is: for
-`dh_transform`, which of its four factors (or their order); for
+with `ex1/outK.txt`: `in1.txt` checks the part (a) functions one by one,
+`in2.txt` checks `forward_kinematics` on the xArm7 and on random chains of one
+to seven joints. Each failure says where the first mistake is: for part (a),
+which function, and for `transform`, which of its factors (or their order); for
 `forward_kinematics`, which step of the chain is the first wrong one, and
-usually why (the product order, a missing offset, the wrong row or angle, or a
-`dh_transform` result that is itself wrong). Code that crashes, calls
+usually why (the product order, the rotation before the offset, the wrong row
+or angle, or a part (a) function that is itself wrong). Code that crashes, calls
 `sys.exit()` or loops forever fails the case with a message saying so, rather
 than stopping the check.
 
@@ -70,8 +72,8 @@ python local_autograder.py -p vis1
 opens the simulated xArm7 in your browser, with a slider per joint. Your
 `forward_kinematics` draws all eight of its frames over the arm, and the status
 line checks them against the simulator's own model: your end effector against
-the flange, and each frame's z axis against the next joint's axis, which is
-where the DH convention puts it.
+the flange, and each frame against the link it belongs to, naming the first one
+that is off.
 
 A matplotlib window opens beside it with the same frames as a stick figure in
 3D, in the robot's base frame: a line from each frame's origin to the next, the
